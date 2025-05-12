@@ -1,6 +1,6 @@
 version: 1
 startCommand:
-  type: http
+  type: stdio
   configSchema:
     type: object
     properties:
@@ -21,6 +21,14 @@ startCommand:
         title: "Customer ID"
         description: "Comax customer ID"
         default: "22222"
+  commandFunction: |-
+    (config) => ({
+      "command": "node",
+      "args": ["dist/index.js"],
+      "env": {
+        "NODE_ENV": "production"
+      }
+    })
 
 # Optional deployment configuration
 deploy:
