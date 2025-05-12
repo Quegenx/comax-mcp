@@ -2,6 +2,7 @@ import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import fetch from "node-fetch";
 import { parseStringPromise } from "xml2js";
+import { config } from "dotenv";
 import type { 
   CreateComaxPaymentLinkParams,
   CreateComaxPaymentLinkResult,
@@ -24,22 +25,30 @@ import type {
   SetComaxOrderSelfPickupParams,
 } from "./types/api.js";
 
+// Load environment variables
+config();
+
 const COMAX_ORDER_ENDPOINT = "http://ws.comax.co.il/Comax_WebServices/CustomersOrders_Service.asmx";
 const COMAX_TOKEN_ENDPOINT = "http://ws.comax.co.il/WS_WRK/Work_Comax_WS/Credit_GetTokenLogin.asmx";
 const COMAX_PAYMENT_PAGE = "http://ws.comax.co.il/Comax_WebServices/Credit/ShortCreditInput_V.aspx";
 const COMAX_CUSTOMER_ENDPOINT = "http://ws.comax.co.il/Comax_WebServices/Customers_Service.asmx";
 
-// These should be in env vars or config in real code
-const ORDER_LOGIN_ID = "GIMU1234";
-const ORDER_LOGIN_PASSWORD = "GIMU4321";
-const TOKEN_LOGIN_NAME = "GIM678";
-const TOKEN_LOGIN_PASSWORD = "GIM987";
-const PAYMENT_LOGIN_ID = "GI12345";
-const PAYMENT_LOGIN_PASSWORD = "GI54321";
-const BRANCH_ID = 6;
-const STORE_ID = 6;
-const PRICE_LIST_ID = 1;
-const RETURN_PAGE = "https://www.gimo.co.il/";
+// Get credentials from environment variables
+const ORDER_LOGIN_ID = process.env.ORDER_LOGIN_ID;
+const ORDER_LOGIN_PASSWORD = process.env.ORDER_LOGIN_PASSWORD;
+const TOKEN_LOGIN_NAME = process.env.TOKEN_LOGIN_NAME;
+const TOKEN_LOGIN_PASSWORD = process.env.TOKEN_LOGIN_PASSWORD;
+const PAYMENT_LOGIN_ID = process.env.PAYMENT_LOGIN_ID;
+const PAYMENT_LOGIN_PASSWORD = process.env.PAYMENT_LOGIN_PASSWORD;
+const BRANCH_ID = Number(process.env.BRANCH_ID) || 6;
+const STORE_ID = Number(process.env.STORE_ID) || 6;
+const PRICE_LIST_ID = Number(process.env.PRICE_LIST_ID) || 1;
+const RETURN_PAGE = process.env.RETURN_PAGE || "https://www.gimo.co.il/";
+
+// Validate required environment variables
+if (!ORDER_LOGIN_ID || !ORDER_LOGIN_PASSWORD || !TOKEN_LOGIN_NAME || !TOKEN_LOGIN_PASSWORD || !PAYMENT_LOGIN_ID || !PAYMENT_LOGIN_PASSWORD) {
+  throw new Error("Missing required environment variables. Please check your .env file.");
+}
 
 const server = new FastMCP({
   name: "Comax Payment Link MCP",
