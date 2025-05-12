@@ -1,8 +1,26 @@
 version: 1
 startCommand:
-  - "pnpm"
-  - "start"
-port: 3000
+  type: http
+  configSchema:
+    type: object
+    properties:
+      orderNumber:
+        type: string
+        title: "Order Number"
+        description: "Comax order number"
+      docYear:
+        type: string
+        title: "Document Year"
+        description: "Document year for the order"
+      reference:
+        type: string
+        title: "Reference"
+        description: "Order reference number"
+      customerId:
+        type: string
+        title: "Customer ID"
+        description: "Comax customer ID"
+        default: "22222"
 
 # Optional deployment configuration
 deploy:
