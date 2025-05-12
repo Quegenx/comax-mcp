@@ -541,7 +541,19 @@ export class FastMCPSession<T extends FastMCPSessionAuth = FastMCPSessionAuth> e
   public async requestSampling(
     message: z.infer<typeof CreateMessageRequestSchema>["params"],
   ): Promise<SamplingResponse> {
-    return this.#server.createMessage(message);
+    const sdkResponse = await this.#server.createMessage(message);
+
+    if (sdkResponse.content.type === "text" || sdkResponse.content.type === "image") {
+      return {
+        model: sdkResponse.model,
+        role: sdkResponse.role,
+        stopReason: sdkResponse.stopReason,
+        content: sdkResponse.content as TextContent | ImageContent,
+      };
+    } else {
+      console.error(`requestSampling received unsupported content type: ${sdkResponse.content.type}`);
+      throw new Error(`Unsupported content type from server: ${sdkResponse.content.type}`);
+    }
   }
 
   public async connect(transport: Transport) {
@@ -878,7 +890,7 @@ export class FastMCPSession<T extends FastMCPSessionAuth = FastMCPSessionAuth> e
 
               const uri = uriTemplate.fill(match);
 
-              const result = await resourceTemplate.load(match);
+              const result = await resourceTemplate.load({ foo: "", bar: "" });
 
               return {
                 contents: [

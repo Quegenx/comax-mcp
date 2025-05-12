@@ -11,17 +11,25 @@
     "format": "prettier --write ."
   },
   "dependencies": {
-    "fastmcp": "latest",
+    "fastmcp": "^1.27.4",
     "node-fetch": "^3.3.2",
-    "zod": "^3.22.4"
+    "xml2js": "^0.4.23",
+    "zod": "^3.24.4"
   },
   "devDependencies": {
     "@tsconfig/node22": "^22.0.1",
-    "@types/node": "^20.11.24",
+    "@types/node": "^22.15.17",
+    "@types/xml2js": "^0.4.14",
+    "@types/yargs": "^17.0.33",
+    "arktype": "^2.1.20",
+    "eventsource-client": "^1.1.3",
+    "get-port-please": "^3.1.2",
     "prettier": "^3.2.5",
     "tsup": "^8.0.2",
-    "tsx": "^4.7.1",
-    "typescript": "^5.3.3"
+    "tsx": "^4.19.4",
+    "typescript": "^5.3.3",
+    "valibot": "^1.1.0",
+    "vitest": "^3.1.3"
   },
   "tsup": {
     "entry": [

@@ -1,717 +1,164 @@
-# FastMCP
+# Comax Payment Link MCP
 
-A TypeScript framework for building [MCP](https://glama.ai/mcp) servers capable of handling client sessions.
+A FastMCP server for integrating with Comax to create payment links, manage orders, and retrieve customer information. Built with [FastMCP](https://github.com/punkpeye/fastmcp), a TypeScript framework for MCP servers.
 
 > [!NOTE]
 >
-> For a Python implementation, see [FastMCP](https://github.com/jlowin/fastmcp).
+> This server is designed to interface with the Comax ERP/payment system.
 
 ## Features
 
-- Simple Tool, Resource, Prompt definition
-- [Authentication](#authentication)
-- [Sessions](#sessions)
-- [Image content](#returning-an-image)
-- [Logging](#logging)
-- [Error handling](#errors)
-- [SSE](#sse)
-- CORS (enabled by default)
-- [Progress notifications](#progress)
-- [Typed server events](#typed-server-events)
-- [Prompt argument auto-completion](#prompt-argument-auto-completion)
-- [Sampling](#requestsampling)
-- Automated SSE pings
-- Roots
-- CLI for [testing](#test-with-mcp-cli) and [debugging](#inspect-with-mcp-inspector)
+- **Comax Integration:** Provides tools for key Comax operations.
+- **FastMCP Core:** Leverages FastMCP for robust MCP server functionality including:
+    - Simple Tool definition with Zod schema validation
+    - Session management
+    - Logging and Error handling
+    - SSE for remote communication (configurable)
+    - CORS (enabled by default)
+    - Progress notifications (for long-running tools, if implemented)
+    - Typed server events
+    - CLI for testing and debugging
 
 ## Installation
 
+Ensure you have Node.js and pnpm (or npm/yarn) installed.
+
 ```bash
-npm install fastmcp
+# Clone the repository (if you haven't already)
+# git clone <your-repo-url>
+# cd <your-repo-name>
+
+# Install dependencies
+pnpm install
 ```
+
+## Configuration
+
+This server requires several credentials and IDs to interact with the Comax API. These are currently hardcoded as constants in `src/index.ts` but should ideally be configured via environment variables for production use.
+
+**Required Configuration (see `src/index.ts`):**
+- `ORDER_LOGIN_ID`, `ORDER_LOGIN_PASSWORD`: For Comax order operations.
+- `TOKEN_LOGIN_NAME`, `TOKEN_LOGIN_PASSWORD`: For Comax credit token generation.
+- `PAYMENT_LOGIN_ID`, `PAYMENT_LOGIN_PASSWORD`: For the Comax payment page.
+- `BRANCH_ID`, `STORE_ID`, `PRICE_LIST_ID`: Default Comax operational IDs.
+- `RETURN_PAGE`: URL for redirection after payment.
+- `COMAX_ORDER_ENDPOINT`, `COMAX_TOKEN_ENDPOINT`, `COMAX_PAYMENT_PAGE`, `COMAX_CUSTOMER_ENDPOINT`: Comax API endpoint URLs.
+
+Consider using a library like `dotenv` to manage these in a `.env` file for local development.
 
 ## Quickstart
 
-> [!NOTE]
->
-> There are many real-world examples of using FastMCP in the wild. See the [Showcase](#showcase) for examples.
+The following is a simplified example of how a tool is defined in this server (`src/index.ts`):
 
-```ts
+```typescript
 import { FastMCP } from "fastmcp";
-import { z } from "zod"; // Or any validation library that supports Standard Schema
+import { z } from "zod"; // Using Zod for schema validation
 
 const server = new FastMCP({
-  name: "My Server",
+  name: "Comax Payment Link MCP",
   version: "1.0.0",
 });
 
+// Example: Create Comax Payment Link Tool
 server.addTool({
-  name: "add",
-  description: "Add two numbers",
+  name: "create_comax_payment_link",
+  description: "Creates a Comax order and returns a payment link.",
   parameters: z.object({
-    a: z.number(),
-    b: z.number(),
+    customerId: z.string().default("22222"),
+    customerName: z.string(),
+    customerPhone: z.string(),
+    customerCity: z.string(),
+    items: z.array(z.object({ // Simplified item schema
+      sku: z.string(),
+      quantity: z.number().int().positive(),
+      price: z.number().positive(),
+      totalSum: z.number().positive(),
+    })).min(1),
+    // ... other parameters
   }),
-  execute: async (args) => {
-    return String(args.a + args.b);
+  execute: async (args, { log }) => {
+    log.info("Attempting to create Comax payment link for", args.customerName);
+    // ... logic to call Comax API ...
+    const paymentUrl = "https://example-payment-url.com/pay?token=XYZ"; // Placeholder
+    log.info("Payment link created successfully.");
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Comax payment link created.\nOrder DocNumber: 12345\nPayment Link: ${paymentUrl}`,
+        },
+      ],
+    };
   },
 });
 
 server.start({
-  transportType: "stdio",
+  transportType: "stdio", // Or "sse" for network access
 });
+
+console.log("Comax Payment Link MCP server started");
 ```
 
-_That's it!_ You have a working MCP server.
+You can test the server in the terminal using the FastMCP CLI.
 
-You can test the server in terminal with:
+## Available Tools
 
-```bash
-git clone https://github.com/punkpeye/fastmcp.git
-cd fastmcp
+This server exposes the following tools for interacting with Comax:
 
-pnpm install
-pnpm build
+- **`create_comax_payment_link`**: Creates a Comax order and returns a payment link.
+- **`update_comax_order_payment`**: Updates a Comax order with payment confirmation.
+- **`get_comax_customer_details`**: Fetches Comax business customer details by CustomerID.
+- **`get_comax_order_status`**: Retrieves the status of a Comax order by DocNumber or Reference.
+- **`get_comax_order_details`**: Gets detailed information for a Comax order.
+- **`get_comax_order_pdf_link`**: Gets a PDF link for a Comax order.
+- **`set_comax_order_status`**: Sets the status of a Comax order.
+- **`get_comax_orders_by_credit_card`**: Fetches orders associated with a credit card number.
+- **`get_comax_orders_simple`**: Retrieves orders based on a date range and optional filters. If the result is an XML URL, it fetches and provides a sample of records.
+- **`chk_item_exists_in_orders`**: Checks if a specific item exists in an order.
+- **`set_comax_order_self_pickup`**: Marks a Comax order for self-pickup.
 
-# Test the addition server example using CLI:
-npx fastmcp dev src/examples/addition.ts
-# Test the addition server example using MCP Inspector:
-npx fastmcp inspect src/examples/addition.ts
-```
+Refer to `src/index.ts` for the exact parameters and implementation details of each tool.
 
-### SSE
-
-[Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events) (SSE) provide a mechanism for servers to send real-time updates to clients over an HTTPS connection. In the context of MCP, SSE is primarily used to enable remote MCP communication, allowing an MCP hosted on a remote machine to be accessed and relay updates over the network.
-
-You can also run the server with SSE support:
-
-```ts
-server.start({
-  transportType: "sse",
-  sse: {
-    endpoint: "/sse",
-    port: 8080,
-  },
-});
-```
-
-This will start the server and listen for SSE connections on `http://localhost:8080/sse`.
-
-You can then use `SSEClientTransport` to connect to the server:
-
-```ts
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-
-const client = new Client(
-  {
-    name: "example-client",
-    version: "1.0.0",
-  },
-  {
-    capabilities: {},
-  },
-);
-
-const transport = new SSEClientTransport(new URL(`http://localhost:8080/sse`));
-
-await client.connect(transport);
-```
-
-## Core Concepts
+## Core Concepts (FastMCP)
 
 ### Tools
 
-[Tools](https://modelcontextprotocol.io/docs/concepts/tools) in MCP allow servers to expose executable functions that can be invoked by clients and used by LLMs to perform actions.
+[Tools](https://modelcontextprotocol.io/docs/concepts/tools) in MCP allow servers to expose executable functions that can be invoked by clients (like AI models or other applications) to perform actions. This server uses tools to interact with the Comax API.
 
-FastMCP uses the [Standard Schema](https://standardschema.dev) specification for defining tool parameters. This allows you to use your preferred schema validation library (like Zod, ArkType, or Valibot) as long as it implements the spec.
+FastMCP uses the [Standard Schema](https://standardschema.dev) specification for defining tool parameters. This server primarily uses Zod for this purpose.
 
-**Zod Example:**
+**Tool Definition Example (Zod):**
 
 ```typescript
 import { z } from "zod";
 
 server.addTool({
-  name: "fetch-zod",
-  description: "Fetch the content of a url (using Zod)",
+  name: "example_comax_tool",
+  description: "An example tool description.",
   parameters: z.object({
-    url: z.string(),
+    someParameter: z.string().describe("Description for the parameter"),
+    // ... other parameters
   }),
-  execute: async (args) => {
-    return await fetchWebpageContent(args.url);
-  },
-});
-```
-
-**ArkType Example:**
-
-```typescript
-import { type } from "arktype";
-
-server.addTool({
-  name: "fetch-arktype",
-  description: "Fetch the content of a url (using ArkType)",
-  parameters: type({
-    url: "string",
-  }),
-  execute: async (args) => {
-    return await fetchWebpageContent(args.url);
-  },
-});
-```
-
-**Valibot Example:**
-
-Valibot requires the peer dependency @valibot/to-json-schema.
-
-```typescript
-import * as v from "valibot";
-
-server.addTool({
-  name: "fetch-valibot",
-  description: "Fetch the content of a url (using Valibot)",
-  parameters: v.object({
-    url: v.string(),
-  }),
-  execute: async (args) => {
-    return await fetchWebpageContent(args.url);
-  },
-});
-```
-
-#### Returning a string
-
-`execute` can return a string:
-
-```js
-server.addTool({
-  name: "download",
-  description: "Download a file",
-  parameters: z.object({
-    url: z.string(),
-  }),
-  execute: async (args) => {
-    return "Hello, world!";
-  },
-});
-```
-
-The latter is equivalent to:
-
-```js
-server.addTool({
-  name: "download",
-  description: "Download a file",
-  parameters: z.object({
-    url: z.string(),
-  }),
-  execute: async (args) => {
+  execute: async (args, { log, reportProgress }) => {
+    log.info("Executing example_comax_tool with", args);
+    // Your tool logic here - e.g., call Comax API
+    // reportProgress({ progress: 50, total: 100 }); // Optional progress reporting
     return {
-      content: [
-        {
-          type: "text",
-          text: "Hello, world!",
-        },
-      ],
+      content: [{ type: "text", text: "Tool execution finished." }],
     };
   },
 });
 ```
 
-#### Returning a list
-
-If you want to return a list of messages, you can return an object with a `content` property:
-
-```js
-server.addTool({
-  name: "download",
-  description: "Download a file",
-  parameters: z.object({
-    url: z.string(),
-  }),
-  execute: async (args) => {
-    return {
-      content: [
-        { type: "text", text: "First message" },
-        { type: "text", text: "Second message" },
-      ],
-    };
-  },
-});
-```
-
-#### Returning an image
-
-Use the `imageContent` to create a content object for an image:
-
-```js
-import { imageContent } from "fastmcp";
-
-server.addTool({
-  name: "download",
-  description: "Download a file",
-  parameters: z.object({
-    url: z.string(),
-  }),
-  execute: async (args) => {
-    return imageContent({
-      url: "https://example.com/image.png",
-    });
-
-    // or...
-    // return imageContent({
-    //   path: "/path/to/image.png",
-    // });
-
-    // or...
-    // return imageContent({
-    //   buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64"),
-    // });
-
-    // or...
-    // return {
-    //   content: [
-    //     await imageContent(...)
-    //   ],
-    // };
-  },
-});
-```
-
-The `imageContent` function takes the following options:
-
-- `url`: The URL of the image.
-- `path`: The path to the image file.
-- `buffer`: The image data as a buffer.
-
-Only one of `url`, `path`, or `buffer` must be specified.
-
-The above example is equivalent to:
-
-```js
-server.addTool({
-  name: "download",
-  description: "Download a file",
-  parameters: z.object({
-    url: z.string(),
-  }),
-  execute: async (args) => {
-    return {
-      content: [
-        {
-          type: "image",
-          data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
-          mimeType: "image/png",
-        },
-      ],
-    };
-  },
-});
-```
-
-#### Logging
-
-Tools can log messages to the client using the `log` object in the context object:
-
-```js
-server.addTool({
-  name: "download",
-  description: "Download a file",
-  parameters: z.object({
-    url: z.string(),
-  }),
-  execute: async (args, { log }) => {
-    log.info("Downloading file...", {
-      url,
-    });
-
-    // ...
-
-    log.info("Downloaded file");
-
-    return "done";
-  },
-});
-```
-
-The `log` object has the following methods:
-
-- `debug(message: string, data?: SerializableValue)`
-- `error(message: string, data?: SerializableValue)`
-- `info(message: string, data?: SerializableValue)`
-- `warn(message: string, data?: SerializableValue)`
-
-#### Errors
-
-The errors that are meant to be shown to the user should be thrown as `UserError` instances:
-
-```js
-import { UserError } from "fastmcp";
-
-server.addTool({
-  name: "download",
-  description: "Download a file",
-  parameters: z.object({
-    url: z.string(),
-  }),
-  execute: async (args) => {
-    if (args.url.startsWith("https://example.com")) {
-      throw new UserError("This URL is not allowed");
-    }
-
-    return "done";
-  },
-});
-```
-
-#### Progress
-
-Tools can report progress by calling `reportProgress` in the context object:
-
-```js
-server.addTool({
-  name: "download",
-  description: "Download a file",
-  parameters: z.object({
-    url: z.string(),
-  }),
-  execute: async (args, { reportProgress }) => {
-    reportProgress({
-      progress: 0,
-      total: 100,
-    });
-
-    // ...
-
-    reportProgress({
-      progress: 100,
-      total: 100,
-    });
-
-    return "done";
-  },
-});
-```
-
-### Resources
-
-[Resources](https://modelcontextprotocol.io/docs/concepts/resources) represent any kind of data that an MCP server wants to make available to clients. This can include:
-
-- File contents
-- Screenshots and images
-- Log files
-- And more
-
-Each resource is identified by a unique URI and can contain either text or binary data.
-
-```ts
-server.addResource({
-  uri: "file:///logs/app.log",
-  name: "Application Logs",
-  mimeType: "text/plain",
-  async load() {
-    return {
-      text: await readLogFile(),
-    };
-  },
-});
-```
-
-> [!NOTE]
->
-> `load` can return multiple resources. This could be used, for example, to return a list of files inside a directory when the directory is read.
->
-> ```ts
-> async load() {
->   return [
->     {
->       text: "First file content",
->     },
->     {
->       text: "Second file content",
->     },
->   ];
-> }
-> ```
-
-You can also return binary contents in `load`:
-
-```ts
-async load() {
-  return {
-    blob: 'base64-encoded-data'
-  };
-}
-```
-
-### Resource templates
-
-You can also define resource templates:
-
-```ts
-server.addResourceTemplate({
-  uriTemplate: "file:///logs/{name}.log",
-  name: "Application Logs",
-  mimeType: "text/plain",
-  arguments: [
-    {
-      name: "name",
-      description: "Name of the log",
-      required: true,
-    },
-  ],
-  async load({ name }) {
-    return {
-      text: `Example log content for ${name}`,
-    };
-  },
-});
-```
-
-#### Resource template argument auto-completion
-
-Provide `complete` functions for resource template arguments to enable automatic completion:
-
-```ts
-server.addResourceTemplate({
-  uriTemplate: "file:///logs/{name}.log",
-  name: "Application Logs",
-  mimeType: "text/plain",
-  arguments: [
-    {
-      name: "name",
-      description: "Name of the log",
-      required: true,
-      complete: async (value) => {
-        if (value === "Example") {
-          return {
-            values: ["Example Log"],
-          };
-        }
-
-        return {
-          values: [],
-        };
-      },
-    },
-  ],
-  async load({ name }) {
-    return {
-      text: `Example log content for ${name}`,
-    };
-  },
-});
-```
-
-### Prompts
-
-[Prompts](https://modelcontextprotocol.io/docs/concepts/prompts) enable servers to define reusable prompt templates and workflows that clients can easily surface to users and LLMs. They provide a powerful way to standardize and share common LLM interactions.
-
-```ts
-server.addPrompt({
-  name: "git-commit",
-  description: "Generate a Git commit message",
-  arguments: [
-    {
-      name: "changes",
-      description: "Git diff or description of changes",
-      required: true,
-    },
-  ],
-  load: async (args) => {
-    return `Generate a concise but descriptive commit message for these changes:\n\n${args.changes}`;
-  },
-});
-```
-
-#### Prompt argument auto-completion
-
-Prompts can provide auto-completion for their arguments:
-
-```js
-server.addPrompt({
-  name: "countryPoem",
-  description: "Writes a poem about a country",
-  load: async ({ name }) => {
-    return `Hello, ${name}!`;
-  },
-  arguments: [
-    {
-      name: "name",
-      description: "Name of the country",
-      required: true,
-      complete: async (value) => {
-        if (value === "Germ") {
-          return {
-            values: ["Germany"],
-          };
-        }
-
-        return {
-          values: [],
-        };
-      },
-    },
-  ],
-});
-```
-
-#### Prompt argument auto-completion using `enum`
-
-If you provide an `enum` array for an argument, the server will automatically provide completions for the argument.
-
-```js
-server.addPrompt({
-  name: "countryPoem",
-  description: "Writes a poem about a country",
-  load: async ({ name }) => {
-    return `Hello, ${name}!`;
-  },
-  arguments: [
-    {
-      name: "name",
-      description: "Name of the country",
-      required: true,
-      enum: ["Germany", "France", "Italy"],
-    },
-  ],
-});
-```
-
-### Authentication
-
-FastMCP allows you to `authenticate` clients using a custom function:
-
-```ts
-import { AuthError } from "fastmcp";
-
-const server = new FastMCP({
-  name: "My Server",
-  version: "1.0.0",
-  authenticate: ({request}) => {
-    const apiKey = request.headers["x-api-key"];
-
-    if (apiKey !== '123') {
-      throw new Response(null, {
-        status: 401,
-        statusText: "Unauthorized",
-      });
-    }
-
-    // Whatever you return here will be accessible in the `context.session` object.
-    return {
-      id: 1,
-    }
-  },
-});
-```
-
-Now you can access the authenticated session data in your tools:
-
-```ts
-server.addTool({
-  name: "sayHello",
-  execute: async (args, { session }) => {
-    return `Hello, ${session.id}!`;
-  },
-});
-```
+#### Logging & Error Handling
+
+-   **Logging:** Tools can use `log.info()`, `log.warn()`, etc., from the `execute` context to send log messages.
+-   **User Errors:** Throw `UserError` from `fastmcp` for errors intended to be shown to the end-user.
+-   **Progress:** Use `reportProgress` for long-running operations.
 
 ### Sessions
 
-The `session` object is an instance of `FastMCPSession` and it describes active client sessions.
-
-```ts
-server.sessions;
-```
-
-We allocate a new server instance for each client connection to enable 1:1 communication between a client and the server.
-
-### Typed server events
-
-You can listen to events emitted by the server using the `on` method:
-
-```ts
-server.on("connect", (event) => {
-  console.log("Client connected:", event.session);
-});
-
-server.on("disconnect", (event) => {
-  console.log("Client disconnected:", event.session);
-});
-```
-
-## `FastMCPSession`
-
-`FastMCPSession` represents a client session and provides methods to interact with the client.
-
-Refer to [Sessions](#sessions) for examples of how to obtain a `FastMCPSession` instance.
-
-### `requestSampling`
-
-`requestSampling` creates a [sampling](https://modelcontextprotocol.io/docs/concepts/sampling) request and returns the response.
-
-```ts
-await session.requestSampling({
-  messages: [
-    {
-      role: "user",
-      content: {
-        type: "text",
-        text: "What files are in the current directory?",
-      },
-    },
-  ],
-  systemPrompt: "You are a helpful file system assistant.",
-  includeContext: "thisServer",
-  maxTokens: 100,
-});
-```
-
-### `clientCapabilities`
-
-The `clientCapabilities` property contains the client capabilities.
-
-```ts
-session.clientCapabilities;
-```
-
-### `loggingLevel`
-
-The `loggingLevel` property describes the logging level as set by the client.
-
-```ts
-session.loggingLevel;
-```
-
-### `roots`
-
-The `roots` property contains the roots as set by the client.
-
-```ts
-session.roots;
-```
-
-### `server`
-
-The `server` property contains an instance of MCP server that is associated with the session.
-
-```ts
-session.server;
-```
-
-### Typed session events
-
-You can listen to events emitted by the session using the `on` method:
-
-```ts
-session.on("rootsChanged", (event) => {
-  console.log("Roots changed:", event.roots);
-});
-
-session.on("error", (event) => {
-  console.error("Error:", event.error);
-});
-```
+FastMCP allocates a new server instance for each client connection, enabling 1:1 communication. Session-specific data can be accessed if authentication is configured on the FastMCP server (not to be confused with Comax API authentication, which is handled per-request within the tools).
 
 ## Running Your Server
 
@@ -720,8 +167,8 @@ session.on("error", (event) => {
 The fastest way to test and debug your server is with `fastmcp dev`:
 
 ```bash
-npx fastmcp dev server.js
-npx fastmcp dev server.ts
+# Ensure you are in the project root directory
+npx fastmcp dev src/index.ts
 ```
 
 This will run your server with [`mcp-cli`](https://github.com/wong2/mcp-cli) for testing and debugging your MCP server in the terminal.
@@ -731,48 +178,60 @@ This will run your server with [`mcp-cli`](https://github.com/wong2/mcp-cli) for
 Another way is to use the official [`MCP Inspector`](https://modelcontextprotocol.io/docs/tools/inspector) to inspect your server with a Web UI:
 
 ```bash
-npx fastmcp inspect server.ts
+npx fastmcp inspect src/index.ts
 ```
+
+### Running with SSE for Network Access
+
+To make the server accessible over the network (e.g., for a remote client or Smithery):
+
+```typescript
+// In src/index.ts, modify server.start:
+server.start({
+  transportType: "sse",
+  sse: {
+    endpoint: "/sse", // Or your desired endpoint
+    port: 8080,       // Or your desired port
+  },
+});
+```
+Then run `node src/index.js` (after compiling TS to JS, e.g., with `tsc`) or use `tsx` for direct execution: `npx tsx src/index.ts`.
 
 ## FAQ
 
-### How to use with Claude Desktop?
+### How to use with Claude Desktop (or similar MCP clients)?
 
-Follow the guide https://modelcontextprotocol.io/quickstart/user and add the following configuration:
+Follow the general guide at [https://modelcontextprotocol.io/quickstart/user](https://modelcontextprotocol.io/quickstart/user) and configure the MCP client to launch your server.
+
+**Example `mcp_config.json` entry:**
 
 ```json
 {
   "mcpServers": {
-    "my-mcp-server": {
+    "comax-gimo-mcp": {
       "command": "npx",
       "args": [
         "tsx",
-        "/PATH/TO/YOUR_PROJECT/src/index.ts"
+        "/FULL/PATH/TO/YOUR/gimo-mcp/src/index.ts" // Replace with the absolute path
       ],
       "env": {
-        "YOUR_ENV_VAR": "value"
+        // If you move Comax credentials to environment variables, define them here:
+        // "ORDER_LOGIN_ID": "your_order_login_id",
+        // "ORDER_LOGIN_PASSWORD": "your_order_login_password",
+        // ... and so on for all required credentials/configs
       }
     }
   }
 }
 ```
+Ensure the path to `src/index.ts` is correct and that any necessary environment variables (if you choose to use them over constants) are set.
 
-## Showcase
+## Smithery Integration
 
-> [!NOTE]
->
-> If you've developed a server using FastMCP, please [submit a PR](https://github.com/punkpeye/fastmcp) to showcase it here!
-
-- [apinetwork/piapi-mcp-server](https://github.com/apinetwork/piapi-mcp-server) - generate media using Midjourney/Flux/Kling/LumaLabs/Udio/Chrip/Trellis
-- [domdomegg/computer-use-mcp](https://github.com/domdomegg/computer-use-mcp) - controls your computer
-- [LiterallyBlah/Dradis-MCP](https://github.com/LiterallyBlah/Dradis-MCP) – manages projects and vulnerabilities in Dradis
-- [Meeting-Baas/meeting-mcp](https://github.com/Meeting-Baas/meeting-mcp) - create meeting bots, search transcripts, and manage recording data
-- [drumnation/unsplash-smart-mcp-server](https://github.com/drumnation/unsplash-smart-mcp-server) – enables AI agents to seamlessly search, recommend, and deliver professional stock photos from Unsplash
-- [ssmanji89/halopsa-workflows-mcp](https://github.com/ssmanji89/halopsa-workflows-mcp) - HaloPSA Workflows integration with AI assistants
-- [aiamblichus/mcp-chat-adapter](https://github.com/aiamblichus/mcp-chat-adapter) – provides a clean interface for LLMs to use chat completion
+This project is intended to be integrated with Smithery to facilitate automated code improvements, testing, and deployment workflows via GitHub pull requests. Smithery will require appropriate GitHub permissions to create branches and propose changes.
 
 ## Acknowledgements
 
+- This server is built using [FastMCP](https://github.com/punkpeye/fastmcp).
 - FastMCP is inspired by the [Python implementation](https://github.com/jlowin/fastmcp) by [Jonathan Lowin](https://github.com/jlowin).
-- Parts of codebase were adopted from [LiteMCP](https://github.com/wong2/litemcp).
-- Parts of codebase were adopted from [Model Context protocolでSSEをやってみる](https://dev.classmethod.jp/articles/mcp-sse/).
+- Parts of FastMCP's codebase were adopted from [LiteMCP](https://github.com/wong2/litemcp) and [Model Context protocolでSSEをやってみる](https://dev.classmethod.jp/articles/mcp-sse/).

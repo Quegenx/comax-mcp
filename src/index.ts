@@ -1,765 +1,938 @@
 import { FastMCP } from "fastmcp";
 import { z } from "zod";
 import fetch from "node-fetch";
-import { BoardType, RoomCategory } from "./types/api.js";
+import { parseStringPromise } from "xml2js";
 import type { 
-  SearchRequest, 
-  SearchResult, 
-  GetRoomsActiveRequest, 
-  GetRoomsActiveResponse,
-  GetRoomsCancelRequest,
-  GetRoomsCancelResponse,
-  GetOpportunitiesRequest,
-  GetOpportunitiesResponse,
-  InsertOpportunityRequest,
-  InsertOpportunityResponse,
-  CreateManualOpportunityRequest,
-  CreateManualOpportunityResponse,
-  CancelRoomActiveResponse,
-  RoomArchiveRequest,
-  RoomArchiveResponse,
-  StaticHotelData
+  CreateComaxPaymentLinkParams,
+  CreateComaxPaymentLinkResult,
+  UpdateComaxOrderPaymentParams,
+  UpdateComaxOrderPaymentResult,
+  ComaxOrderItem,
+  GetComaxCustomerDetailsParams,
+  GetComaxCustomerDetailsResult,
+  ComaxCustomerDetails,
+  GetComaxOrderStatusParams,
+  ComaxOrderStatusResult,
+  GetComaxOrderDetailsParams,
+  ComaxOrderDetailsResult,
+  GetComaxOrderPDFLinkParams,
+  SetComaxOrderStatusParams,
+  GetComaxOrdersByCreditCardParams,
+  ComaxOrderByCreditCard,
+  GetComaxOrdersSimpleParams,
+  ChkItemExistsInOrdersParams,
+  SetComaxOrderSelfPickupParams,
 } from "./types/api.js";
 
-// Validate date format YYYY-MM-DD
-const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+const COMAX_ORDER_ENDPOINT = "http://ws.comax.co.il/Comax_WebServices/CustomersOrders_Service.asmx";
+const COMAX_TOKEN_ENDPOINT = "http://ws.comax.co.il/WS_WRK/Work_Comax_WS/Credit_GetTokenLogin.asmx";
+const COMAX_PAYMENT_PAGE = "http://ws.comax.co.il/Comax_WebServices/Credit/ShortCreditInput_V.aspx";
+const COMAX_CUSTOMER_ENDPOINT = "http://ws.comax.co.il/Comax_WebServices/Customers_Service.asmx";
+
+// These should be in env vars or config in real code
+const ORDER_LOGIN_ID = "GIMU1234";
+const ORDER_LOGIN_PASSWORD = "GIMU4321";
+const TOKEN_LOGIN_NAME = "GIM678";
+const TOKEN_LOGIN_PASSWORD = "GIM987";
+const PAYMENT_LOGIN_ID = "GI12345";
+const PAYMENT_LOGIN_PASSWORD = "GI54321";
+const BRANCH_ID = 6;
+const STORE_ID = 6;
+const PRICE_LIST_ID = 1;
+const RETURN_PAGE = "https://www.gimo.co.il/";
 
 const server = new FastMCP({
-  name: "Medici Hotels MCP",
+  name: "Comax Payment Link MCP",
   version: "1.0.0",
 });
 
-// Add the search tool
+const comaxOrderItemSchema = z.object({
+  sku: z.string(),
+  quantity: z.number().int().positive(),
+  price: z.number().positive(),
+  totalSum: z.number().positive(),
+  remarks: z.string().optional(),
+});
+
 server.addTool({
-  name: "search_hotels_prices_by_dates",
-  description: "Search for hotel prices using filters like city, dates, star rating, and guest configuration",
+  name: "create_comax_payment_link",
+  description: "Creates a Comax order and returns a payment link for the user to complete payment. Supports multiple items, business customers, and more.",
   parameters: z.object({
-    dateFrom: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format"),
-    dateTo: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format"),
-    hotelName: z.string().optional(),
-    city: z.string(),
-    adults: z.number().int().min(1).default(2),
-    paxChildren: z.array(z.number().int().min(0).max(17)).default([]),
-    stars: z.number().int().min(1).max(5).optional(),
-  }),
+    customerId: z.string().default("22222"),
+    customerName: z.string(),
+    customerPhone: z.string(),
+    customerCity: z.string(),
+    customerAddress: z.string().optional(),
+    customerZip: z.string().optional(),
+    priceListId: z.number().int().optional(),
+    items: z.array(comaxOrderItemSchema).min(1),
+    reference: z.string().optional(),
+    remarks: z.string().optional(),
+  }) as z.ZodType<CreateComaxPaymentLinkParams>,
   execute: async (args, { log }) => {
+    const reference = args.reference || `GIMO_ORDER_${Date.now()}`;
+    const priceListId = args.priceListId || PRICE_LIST_ID;
+    const totalSum = args.items.reduce((sum, item) => sum + item.totalSum, 0);
+    const itemsXml = args.items.map(item => `<string>${item.sku}</string>`).join("");
+    const quantityXml = args.items.map(item => `<string>${item.quantity}</string>`).join("");
+    const priceXml = args.items.map(item => `<string>${item.price}</string>`).join("");
+    const totalSumXml = args.items.map(item => `<string>${item.totalSum}</string>`).join("");
+    const remarksXml = args.items.map(item => `<string>${item.remarks || ""}</string>`).join("");
+    const orderXml = `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n  <soap:Body>\n    <WriteCustomersOrderByParamsExtendedPlusPrice xmlns=\"http://ws.comax.co.il/Comax_WebServices/\">\n      <CustomerID>${args.customerId}</CustomerID>\n      <StoreID>${STORE_ID}</StoreID>\n      <BranchID>${BRANCH_ID}</BranchID>\n      <PriceListID>${priceListId}</PriceListID>\n      <DoJ5>true</DoJ5>\n      <Remarks>${args.remarks || "Order via API"}</Remarks>\n      <Details>Order for ${args.customerName}</Details>\n      <Reference>${reference}</Reference>\n      <Mode>Add</Mode>\n      <DocNumber></DocNumber>\n      <ManualDocNumber>false</ManualDocNumber>\n      <Items>${itemsXml}</Items>\n      <Quantity>${quantityXml}</Quantity>\n      <Price>${priceXml}</Price>\n      <DiscountPercent><string>0</string></DiscountPercent>\n      <TotalSum>${totalSumXml}</TotalSum>\n      <ItemRemarks>${remarksXml}</ItemRemarks>\n      <CustomerName>${args.customerName}</CustomerName>\n      <CustomerPhone>${args.customerPhone}</CustomerPhone>\n      <CustomerCity>${args.customerCity}</CustomerCity>\n      ${args.customerAddress ? `<CustomerAddress>${args.customerAddress}</CustomerAddress>` : ""}\n      ${args.customerZip ? `<CustomerZip>${args.customerZip}</CustomerZip>` : ""}\n      <Status>1</Status>\n      <LoginID>${ORDER_LOGIN_ID}</LoginID>\n      <LoginPassword>${ORDER_LOGIN_PASSWORD}</LoginPassword>\n    </WriteCustomersOrderByParamsExtendedPlusPrice>\n  </soap:Body>\n</soap:Envelope>`;
+
+    const orderRes = await fetch(COMAX_ORDER_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/xml; charset=utf-8",
+        "SOAPAction": "http://ws.comax.co.il/Comax_WebServices/WriteCustomersOrderByParamsExtendedPlusPrice",
+      },
+      body: orderXml,
+    });
+    const orderText = await orderRes.text();
+    const orderJson = await parseStringPromise(orderText);
+    let docNumber = null;
     try {
-      // TODO: Replace with actual token management
-      const token = process.env.MEDICI_API_TOKEN;
-      if (!token) {
-        throw new Error("API token not configured");
-      }
-
-      const requestBody: SearchRequest = {
-        dateFrom: args.dateFrom,
-        dateTo: args.dateTo,
-        city: args.city,
-        adults: args.adults,
-        paxChildren: args.paxChildren,
-        ...(args.hotelName && { hotelName: args.hotelName }),
-        ...(args.stars && { stars: args.stars }),
+      docNumber = orderJson["soap:Envelope"]["soap:Body"][0]["WriteCustomersOrderByParamsExtendedPlusPriceResponse"][0]["WriteCustomersOrderByParamsExtendedPlusPriceResult"][0]["DocNumber"][0];
+    } catch (e) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to parse DocNumber from Comax order response: ${orderText}`,
+          },
+        ],
       };
+    }
 
-      // Log a simplified version of the request
-      log.info("Searching for hotels", {
-        city: requestBody.city,
-        dates: `${requestBody.dateFrom} to ${requestBody.dateTo}`,
-        adults: requestBody.adults,
-        children: requestBody.paxChildren.length,
-        stars: requestBody.stars,
-      });
+    const tokenXml = `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n  <soap:Body>\n    <getLoginDetailsParams xmlns=\"http://tempuri.org/\">\n      <TokenParams>\n        <Odbc></Odbc>\n        <Scm>${totalSum}</Scm>\n        <ProceedOnShvaErr></ProceedOnShvaErr>\n        <returnPage>${RETURN_PAGE}</returnPage>\n        <getErrMsg>1</getErrMsg>\n        <BranchID>${BRANCH_ID}</BranchID>\n        <Token></Token>\n        <currency>ILS</currency>\n        <UniqueID>${docNumber}</UniqueID>\n        <Ref>${reference}</Ref>\n        <MaxPaymentsNumber>12</MaxPaymentsNumber>\n        <AutoCreditCompany>1</AutoCreditCompany>\n        <ViewTotal>1</ViewTotal>\n      </TokenParams>\n      <LoginName>${TOKEN_LOGIN_NAME}</LoginName>\n      <Password>${TOKEN_LOGIN_PASSWORD}</Password>\n    </getLoginDetailsParams>\n  </soap:Body>\n</soap:Envelope>`;
 
-      const response = await fetch(
-        "https://medici-backend.azurewebsites.net/api/hotels/GetInnstantSearchPrice",
-        {
+    const tokenRes = await fetch(COMAX_TOKEN_ENDPOINT, {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API request failed: ${response.status} - ${errorText}`);
-      }
-
-      const results = (await response.json()) as SearchResult[];
-
-      // Format the results for better readability
+        "Content-Type": "text/xml; charset=utf-8",
+        "SOAPAction": "http://tempuri.org/getLoginDetailsParams",
+      },
+      body: tokenXml,
+    });
+    const tokenText = await tokenRes.text();
+    const tokenJson = await parseStringPromise(tokenText);
+    let tokenLogin = null;
+    try {
+      tokenLogin = tokenJson["soap:Envelope"]["soap:Body"][0]["getLoginDetailsParamsResponse"][0]["getLoginDetailsParamsResult"][0];
+    } catch (e) {
       return {
         content: [
           {
             type: "text",
-            text: `Found ${results.length} hotel options:\n\n${results
-              .map(
-                (r) => `- ${r.items[0].name} (${r.items[0].hotelId})
-  • Price: ${r.price.amount} ${r.price.currency}
-  • Board: ${r.items[0].board}
-  • Room Type: ${r.items[0].category} ${r.items[0].bedding}
-  • Cancellation: ${r.cancellation.type}
-  ${r.specialOffers.length ? `• Special Offers: ${r.specialOffers.map(o => o.title).join(", ")}\n` : ""}`
-              )
-              .join("\n")}`
-          }
-        ]
+            text: `Failed to parse TokenLogin from Comax token response: ${tokenText}`,
+          },
+        ],
       };
-    } catch (error) {
-      log.error("Search failed", { error: String(error) });
-      throw error;
     }
-  }
+
+    const paymentUrl = `${COMAX_PAYMENT_PAGE}?LoginID=${PAYMENT_LOGIN_ID}&LoginPassword=${PAYMENT_LOGIN_PASSWORD}&TokenLogin=${encodeURIComponent(tokenLogin)}&MaxPaymentsNumber=12&GetErrMsg=1&AutoCreditCompany=1&ViewTotal=1&IsSecure190123`;
+
+      return {
+        content: [
+          {
+            type: "text",
+          text: `Comax payment link created.\n\nOrder DocNumber: ${docNumber}\nPayment Link: ${paymentUrl}`,
+        },
+      ],
+    };
+  },
 });
 
-// Add the get active rooms tool
 server.addTool({
-  name: "get_my_hotels_orders",
-  description: "Retrieve all currently active (unsold) room opportunities with optional filters",
+  name: "update_comax_order_payment",
+  description: "Updates a Comax order with payment confirmation after user completes payment. Use this after receiving payment result (logc) from returnPage.",
   parameters: z.object({
-    StartDate: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format").optional(),
-    EndDate: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format").optional(),
-    HotelName: z.string().optional(),
-    HotelStars: z.number().int().min(1).max(5).optional(),
-    City: z.string().optional(),
-    RoomBoard: z.string().optional(),
-    RoomCategory: z.string().optional(),
-    Provider: z.string().optional(),
-  }),
+    docNumber: z.string(),
+    customerId: z.string().default("22222"),
+    storeId: z.number().int().default(STORE_ID),
+    branchId: z.number().int().default(BRANCH_ID),
+    priceListId: z.number().int().optional(),
+    payType: z.string(),
+    creditTokenNumber: z.string(),
+    creditCompany: z.string(),
+    creditCardNumber: z.string(),
+    creditExpireDate: z.string(),
+    creditTZ: z.string(),
+    creditPaysNumber: z.string(),
+    creditTransactionType: z.string(),
+    items: z.array(comaxOrderItemSchema).min(1),
+    remarks: z.string().optional(),
+  }) as z.ZodType<UpdateComaxOrderPaymentParams>,
   execute: async (args, { log }) => {
-    try {
-      const token = process.env.MEDICI_API_TOKEN;
-      if (!token) {
-        throw new Error("API token not configured");
-      }
+    const priceListId = args.priceListId || PRICE_LIST_ID;
+    const itemsXml = args.items.map(item => `<string>${item.sku}</string>`).join("");
+    const quantityXml = args.items.map(item => `<string>${item.quantity}</string>`).join("");
+    const priceXml = args.items.map(item => `<string>${item.price}</string>`).join("");
+    const totalSumXml = args.items.map(item => `<string>${item.totalSum}</string>`).join("");
+    const remarksXml = args.items.map(item => `<string>${item.remarks || ""}</string>`).join("");
+    const updateXml = `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n  <soap:Body>\n    <WriteCustomersOrderByParamsExtendedPlusPrice xmlns=\"http://ws.comax.co.il/Comax_WebServices/\">\n      <LoginID>${ORDER_LOGIN_ID}</LoginID>\n      <LoginPassword>${ORDER_LOGIN_PASSWORD}</LoginPassword>\n      <DocNumber>${args.docNumber}</DocNumber>\n      <CustomerID>${args.customerId}</CustomerID>\n      <StoreID>${args.storeId}</StoreID>\n      <BranchID>${args.branchId}</BranchID>\n      <Mode>Update</Mode>\n      <PayType>${args.payType}</PayType>\n      <CreditTokenNumber>${args.creditTokenNumber}</CreditTokenNumber>\n      <CreditCompany>${args.creditCompany}</CreditCompany>\n      <CreditCardNumber>${args.creditCardNumber}</CreditCardNumber>\n      <CreditExpireDate>${args.creditExpireDate}</CreditExpireDate>\n      <CreditTZ>${args.creditTZ}</CreditTZ>\n      <CreditPaysNumber>${args.creditPaysNumber}</CreditPaysNumber>\n      <CreditTransactionType>${args.creditTransactionType}</CreditTransactionType>\n      <Items>${itemsXml}</Items>\n      <Quantity>${quantityXml}</Quantity>\n      <Price>${priceXml}</Price>\n      <TotalSum>${totalSumXml}</TotalSum>\n      <PriceListID>${priceListId}</PriceListID>\n      <DoJ5>true</DoJ5>\n      <Remarks>${args.remarks || "Order payment updated with LOGC."}</Remarks>\n    </WriteCustomersOrderByParamsExtendedPlusPrice>\n  </soap:Body>\n</soap:Envelope>`;
 
-      const requestBody: GetRoomsActiveRequest = {
-        ...args
-      };
-
-      log.info("Fetching active rooms", {
-        dates: args.StartDate && args.EndDate ? `${args.StartDate} to ${args.EndDate}` : "all dates",
-        city: args.City || "any",
-        hotel: args.HotelName || "any",
-        stars: args.HotelStars || "any",
-        board: args.RoomBoard || "any",
-        category: args.RoomCategory || "any",
-        provider: args.Provider || "any"
-      });
-
-      const response = await fetch(
-        "https://medici-backend.azurewebsites.net/api/hotels/GetRoomsActive",
-        {
+    const updateRes = await fetch(COMAX_ORDER_ENDPOINT, {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API request failed: ${response.status} - ${errorText}`);
-      }
-
-      const data = (await response.json()) as GetRoomsActiveResponse;
-
-      // Format the results for better readability
+        "Content-Type": "text/xml; charset=utf-8",
+        "SOAPAction": "http://ws.comax.co.il/Comax_WebServices/WriteCustomersOrderByParamsExtendedPlusPrice",
+      },
+      body: updateXml,
+    });
+    const updateText = await updateRes.text();
+    if (!updateRes.ok) {
       return {
         content: [
           {
             type: "text",
-            text: `Found ${data.TotalCount} active rooms (${data.Pages} pages):\n\n${data.Results
-              .map(
-                (r) => `- ${r.HotelName} (${r.City})
-  • Dates: ${new Date(r.StartDate).toLocaleDateString()} to ${new Date(r.EndDate).toLocaleDateString()}
-  • Price: ${r.Price} (Push: ${r.PushPrice}, Last: ${r.LastPrice})
-  • Room: ${r.RoomCategory} with ${r.RoomBoard} board
-  • Prebook ID: ${r.PrebookId}
-  • Reserved for: ${r.ReservationFullName}
-  • Last price update: ${new Date(r.PriceUpdatedAt).toLocaleString()}`
-              )
-              .join("\n\n")}`
-          }
-        ]
+            text: `Comax order update failed: ${updateText}`,
+          },
+        ],
       };
-    } catch (error) {
-      log.error("Failed to fetch active rooms", { error: String(error) });
-      throw error;
     }
-  }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Order updated with payment confirmation.\n\nDocNumber: ${args.docNumber}`,
+        },
+      ],
+    };
+  },
 });
 
-// Add the get canceled rooms tool
 server.addTool({
-  name: "get_hotels_rooms_canceled",
-  description: "Returns a list of room bookings that were canceled, with optional filters for dates, hotel, city, etc.",
+  name: "get_comax_customer_details",
+  description: "Fetches Comax business customer details by CustomerID. Returns all available fields, including price list, discount, and contact info.",
   parameters: z.object({
-    StartDate: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format").optional(),
-    EndDate: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format").optional(),
-    HotelName: z.string().optional(),
-    HotelStars: z.number().int().min(1).max(5).optional(),
-    City: z.string().optional(),
-    RoomBoard: z.string().optional(),
-    RoomCategory: z.string().optional(),
-    Provider: z.string().optional(),
-  }),
+    customerId: z.string(),
+  }) as z.ZodType<GetComaxCustomerDetailsParams>,
   execute: async (args, { log }) => {
-    try {
-      const token = process.env.MEDICI_API_TOKEN;
-      if (!token) {
-        throw new Error("API token not configured");
-      }
+    const customerXml = `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n  <soap:Body>\n    <Get_CustomerDetails xmlns=\"http://ws.comax.co.il/Comax_WebServices/\">\n      <CustomerID>${args.customerId}</CustomerID>\n      <CustomerDetails></CustomerDetails>\n      <LoginID>${ORDER_LOGIN_ID}</LoginID>\n      <LoginPassword>${ORDER_LOGIN_PASSWORD}</LoginPassword>\n    </Get_CustomerDetails>\n  </soap:Body>\n</soap:Envelope>`;
 
-      const requestBody: GetRoomsCancelRequest = {
-        ...args
-      };
-
-      log.info("Fetching canceled rooms", {
-        dates: args.StartDate && args.EndDate ? `${args.StartDate} to ${args.EndDate}` : "all dates",
-        city: args.City || "any",
-        hotel: args.HotelName || "any",
-        stars: args.HotelStars || "any",
-        board: args.RoomBoard || "any",
-        category: args.RoomCategory || "any",
-        provider: args.Provider || "any"
-      });
-
-      const response = await fetch(
-        "https://medici-backend.azurewebsites.net/api/hotels/GetRoomsCancel",
-        {
+    const res = await fetch(`${COMAX_CUSTOMER_ENDPOINT}?op=Get_CustomerDetails`, {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API request failed: ${response.status} - ${errorText}`);
+        "Content-Type": "text/xml; charset=utf-8",
+        "SOAPAction": "http://ws.comax.co.il/Comax_WebServices/Get_CustomerDetails",
+      },
+      body: customerXml,
+    });
+    const xml = await res.text();
+    let customer: ComaxCustomerDetails | undefined = undefined;
+    let error: string | undefined = undefined;
+    let success = false;
+    try {
+      const parsed = await parseStringPromise(xml, { explicitArray: false, ignoreAttrs: false });
+      const body = parsed["soap:Envelope"]["soap:Body"];
+      const response = body["Get_CustomerDetailsResponse"];
+      const result = response["Get_CustomerDetailsResult"];
+      success = result === "true";
+      if (success) {
+        const details = response["CustomerDetails"];
+        customer = details as ComaxCustomerDetails;
+      } else {
+        error = "Comax returned false for Get_CustomerDetailsResult.";
       }
-
-      const results = (await response.json()) as GetRoomsCancelResponse;
-
-      // Format the results for better readability
+    } catch (e) {
+      error = `Failed to parse Comax customer details XML: ${e}`;
+    }
+    if (!success || !customer) {
       return {
         content: [
           {
             type: "text",
-            text: `Found ${results.length} canceled room bookings:\n\n${results
-              .map(
-                (r) => `- ${r.hotelName}
-  • Dates: ${new Date(r.startDate).toLocaleDateString()} to ${new Date(r.endDate).toLocaleDateString()}
-  • Room: ${r.category} with ${r.board}
-  • Price: ${r.price} (Push Price: ${r.pushPrice})
-  • Reserved for: ${r.reservationFullName}
-  • Free cancellation until: ${new Date(r.cancellationTo).toLocaleString()}`
-              )
-              .join("\n\n")}`
-          }
-        ]
+            text: `Failed to fetch customer details.\n${error || "Unknown error."}`,
+          },
+        ],
       };
-    } catch (error) {
-      log.error("Failed to fetch canceled rooms", { error: String(error) });
-      throw error;
     }
-  }
+    // Format a summary
+    const summary = `Customer: ${customer.Name} (ID: ${customer.ID})\nCity: ${customer.City || "-"}\nPhone: ${customer.Phone || "-"}\nEmail: ${customer.Email || "-"}\nPriceListID: ${customer.PriceListID || "-"}\nDiscount: ${customer.DiscountPercent || "-"}\nBlocked: ${customer.IsBlocked ? "Yes" : "No"}`;
+    return {
+      content: [
+        {
+          type: "text",
+          text: summary + "\n\nFull details as JSON:\n```json\n" + JSON.stringify(customer, null, 2) + "\n```",
+        },
+      ],
+    };
+  },
 });
 
-// Add the opportunities tool
 server.addTool({
-  name: "get_hotels_opportunities_options",
-  description: "Returns a list of active room opportunities based on hotel, date, and other filters",
+  name: "get_comax_order_status",
+  description:
+    "Get order status by DocNumber or Reference. Returns status code, name, tracking, and more.",
   parameters: z.object({
-    StartDate: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format").optional(),
-    EndDate: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format").optional(),
-    HotelName: z.string().optional(),
-    HotelStars: z.number().int().min(1).max(5).optional(),
-    City: z.string().optional(),
-    RoomBoard: z.string().optional(),
-    RoomCategory: z.string().optional(),
-    Provider: z.string().optional(),
-  }),
+    docNumber: z.string().optional(),
+    reference: z.string().optional(),
+  }) as z.ZodType<GetComaxOrderStatusParams>,
   execute: async (args, { log }) => {
-    try {
-      const token = process.env.MEDICI_API_TOKEN;
-      if (!token) {
-        throw new Error("API token not configured");
-      }
-
-      const requestBody: GetOpportunitiesRequest = {
-        ...args
+    if (!args.docNumber && !args.reference) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "You must provide either docNumber or reference.",
+          },
+        ],
       };
-
-      log.info("Fetching opportunities", {
-        dates: args.StartDate && args.EndDate ? `${args.StartDate} to ${args.EndDate}` : "all dates",
-        city: args.City || "any",
-        hotel: args.HotelName || "any",
-        stars: args.HotelStars || "any",
-        board: args.RoomBoard || "any",
-        category: args.RoomCategory || "any",
-        provider: args.Provider || "any"
-      });
-
-      const response = await fetch(
-        "https://medici-backend.azurewebsites.net/api/hotels/GetOpportunities",
-        {
+    }
+    const soapXml = `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n  <soap:Body>\n    <GetCustomerOrderStatus xmlns=\"http://ws.comax.co.il/Comax_WebServices/\">\n      <DocNumber>${args.docNumber ? args.docNumber : 0}</DocNumber>\n      <Reference>${args.reference ? args.reference : 0}</Reference>\n      <LoginID>${ORDER_LOGIN_ID}</LoginID>\n      <LoginPassword>${ORDER_LOGIN_PASSWORD}</LoginPassword>\n    </GetCustomerOrderStatus>\n  </soap:Body>\n</soap:Envelope>`;
+    const res = await fetch(COMAX_ORDER_ENDPOINT, {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API request failed: ${response.status} - ${errorText}`);
+        "Content-Type": "text/xml; charset=utf-8",
+        SOAPAction:
+          "http://ws.comax.co.il/Comax_WebServices/GetCustomerOrderStatus",
+      },
+      body: soapXml,
+    });
+    const xml = await res.text();
+    let status: ComaxOrderStatusResult | undefined = undefined;
+    let error: string | undefined = undefined;
+    let success = false;
+    let rawXml: string | undefined = xml;
+    try {
+      const parsed = await parseStringPromise(xml, { explicitArray: false });
+      const body = parsed["soap:Envelope"]["soap:Body"];
+      const response = body["GetCustomerOrderStatusResponse"];
+      const result = response["GetCustomerOrderStatusResult"];
+      if (result) {
+        status = {
+          StatusCode: parseInt(result.StatusCode),
+          StatusName: result.StatusName,
+          TrackingNumber: result.TrackingNumber,
+          ErrorMessage: result.ErrorMessage,
+          SelfSupply: result.SelfSupply === "true" || result.SelfSupply === true,
+          CloseOrder: result.CloseOrder ? parseInt(result.CloseOrder) : undefined,
+          SwClose: result.SwClose ? parseInt(result.SwClose) : undefined,
+          DeliveryStore: result.DeliveryStore
+            ? parseInt(result.DeliveryStore)
+            : undefined,
+          DocNumber: result.DocNumber?.toString(),
+        };
+        success = true;
+      } else {
+        error = "No GetCustomerOrderStatusResult in response.";
       }
-
-      const opportunities = (await response.json()) as GetOpportunitiesResponse;
-
-      // Format the results for better readability
+    } catch (e) {
+      error = `Failed to parse Comax order status XML: ${e}`;
+    }
+    if (!success || !status) {
       return {
         content: [
           {
             type: "text",
-            text: `Found ${opportunities.length} opportunities:\n\n${opportunities
-              .map(
-                (opp) => `- ${opp.HotelName}
-  • Prebook ID: ${opp.PrebookId}
-  • Dates: ${new Date(opp.StartDate).toLocaleDateString()} to ${new Date(opp.EndDate).toLocaleDateString()}
-  • Room: ${opp.Category} with ${opp.Board}
-  • Price: ${opp.Price.toFixed(2)} (Push: ${opp.PushPrice.toFixed(2)})
-  • Last Price: ${opp.LastPrice.toFixed(2)} (Updated: ${new Date(opp.DateLastPrice).toLocaleString()})
-  • Reserved for: ${opp.ReservationFullName}`
-              )
-              .join("\n\n")}`
-          }
-        ]
+            text: `Failed to fetch order status.\n${error || "Unknown error."}\n\nRaw XML:\n${rawXml}`,
+          },
+        ],
       };
-    } catch (error) {
-      log.error("Failed to fetch opportunities", { error: String(error) });
-      throw error;
     }
-  }
+    // Format a summary
+    const summary = `Order Status: ${status.StatusName} (Code: ${status.StatusCode})\nTracking: ${status.TrackingNumber || "-"}\nClosed: ${status.CloseOrder ? "Yes" : "No"}\nError: ${status.ErrorMessage || "-"}`;
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            summary +
+            "\n\nFull status as JSON:\n```json\n" +
+            JSON.stringify(status, null, 2) +
+            "\n```",
+        },
+      ],
+    };
+  },
 });
 
-// Add the insert opportunity tool
 server.addTool({
-  name: "insert_hotels_opportunities_options",
-  description: "Insert a new hotel opportunity into the system",
+  name: "get_comax_order_details",
+  description:
+    "Get order details by DocNumber, DocYear, and Reference. All are required. Returns all order fields, customer, errors, etc.",
   parameters: z.object({
-    boardId: z.number().int().min(1).max(7),
-    categoryId: z.number().int().min(1).max(15),
-    startDateStr: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, "Date must be in ISO8601 format"),
-    endDateStr: z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, "Date must be in ISO8601 format"),
-    buyPrice: z.number().positive(),
-    pushPrice: z.number().positive(),
-    maxRooms: z.number().int().positive(),
-    ratePlanCode: z.string().optional(),
-    invTypeCode: z.string().optional(),
-    reservationFullName: z.string(),
-    destinationId: z.number().int().positive(),
-    stars: z.number().int().min(1).max(5),
-    locationRange: z.number().int().min(0).optional(),
-    providerId: z.number().int().positive().nullable().optional(),
-    paxAdults: z.number().int().positive(),
-    paxChildren: z.array(z.number().int().min(0).max(17)).default([]),
-  }),
+    docNumber: z.string(),
+    docYear: z.string(),
+    reference: z.string(),
+  }) as z.ZodType<GetComaxOrderDetailsParams>,
   execute: async (args, { log }) => {
-    try {
-      const token = process.env.MEDICI_API_TOKEN;
-      if (!token) {
-        throw new Error("API token not configured");
-      }
-
-      const requestBody: InsertOpportunityRequest = {
-        ...args
+    if (!args.docNumber || !args.docYear || !args.reference) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "You must provide docNumber, docYear, and reference.",
+          },
+        ],
       };
-
-      // Get board type and room category names for logging
-      const boardName = BoardType[args.boardId] || 'Unknown';
-      const categoryName = RoomCategory[args.categoryId] || 'Unknown';
-
-      log.info("Inserting new opportunity", {
-        dates: `${new Date(args.startDateStr).toLocaleDateString()} to ${new Date(args.endDateStr).toLocaleDateString()}`,
-        board: boardName,
-        category: categoryName,
-        prices: `Buy: ${args.buyPrice}, Push: ${args.pushPrice}`,
-        maxRooms: args.maxRooms,
-        stars: args.stars,
-        pax: `${args.paxAdults} adults, ${args.paxChildren.length} children`
-      });
-
-      const response = await fetch(
-        "https://medici-backend.azurewebsites.net/api/hotels/InsertOpportunity",
-        {
+    }
+    const soapXml = `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n  <soap:Body>\n    <Get_CustomerOrderDetails xmlns=\"http://ws.comax.co.il/Comax_WebServices/\">\n      <DocNumber>${args.docNumber}</DocNumber>\n      <DocYear>${args.docYear}</DocYear>\n      <Reference>${args.reference}</Reference>\n      <LoginID>${ORDER_LOGIN_ID}</LoginID>\n      <LoginPassword>${ORDER_LOGIN_PASSWORD}</LoginPassword>\n    </Get_CustomerOrderDetails>\n  </soap:Body>\n</soap:Envelope>`;
+    const res = await fetch(COMAX_ORDER_ENDPOINT, {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API request failed: ${response.status} - ${errorText}`);
+        "Content-Type": "text/xml; charset=utf-8",
+        SOAPAction:
+          "http://ws.comax.co.il/Comax_WebServices/Get_CustomerOrderDetails",
+      },
+      body: soapXml,
+    });
+    const xml = await res.text();
+    let details: ComaxOrderDetailsResult | undefined = undefined;
+    let error: string | undefined = undefined;
+    let success = false;
+    let rawXml: string | undefined = xml;
+    try {
+      const parsed = await parseStringPromise(xml, { explicitArray: false });
+      const body = parsed["soap:Envelope"]["soap:Body"];
+      const response = body["Get_CustomerOrderDetailsResponse"];
+      const result = response["Get_CustomerOrderDetailsResult"];
+      if (result) {
+        details = result;
+        success = true;
+      } else {
+        error = "No Get_CustomerOrderDetailsResult in response.";
       }
-
-      const result = (await response.json()) as InsertOpportunityResponse;
-
-      // Format the results for better readability
+    } catch (e) {
+      error = `Failed to parse Comax order details XML: ${e}`;
+    }
+    if (!success || !details) {
       return {
         content: [
           {
             type: "text",
-            text: `✅ Opportunity inserted successfully!
-
-Details:
-• ID: ${result.id}
-• Board: ${boardName} (ID: ${args.boardId})
-• Room Category: ${categoryName} (ID: ${args.categoryId})
-• Dates: ${new Date(args.startDateStr).toLocaleDateString()} to ${new Date(args.endDateStr).toLocaleDateString()}
-• Prices: Buy ${args.buyPrice}, Push ${args.pushPrice}
-• Rooms Available: ${args.maxRooms}
-• Stars: ${args.stars}
-• Guest Configuration: ${args.paxAdults} adults${args.paxChildren.length ? `, ${args.paxChildren.length} children (ages: ${args.paxChildren.join(', ')})` : ''}
-• Reserved for: ${args.reservationFullName}
-
-Server Response: ${result.message}`
-          }
-        ]
+            text: `Failed to fetch order details.\n${error || "Unknown error."}\n\nRaw XML:\n${rawXml}`,
+          },
+        ],
       };
-    } catch (error) {
-      log.error("Failed to insert opportunity", { error: String(error) });
-      throw error;
     }
-  }
+    // Format a summary
+    const summary = `Order: ${details.DocNumber || "-"} | Customer: ${details.CustomerID || "-"} | Total: ${details.TotalSum || "-"} | Status: ${details.Status || "-"}`;
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            summary +
+            "\n\nFull order details as JSON:\n```json\n" +
+            JSON.stringify(details, null, 2) +
+            "\n```",
+        },
+      ],
+    };
+  },
 });
 
-// Add the create manual opportunity tool
 server.addTool({
-  name: "book_now_hotel",
-  description: "Create a manual hotel room opportunity and trigger the booking flow for it",
+  name: "get_comax_order_pdf_link",
+  description:
+    "Get order PDF link by DocNumber, Reference, or DocYear. Returns a direct PDF URL if available.",
   parameters: z.object({
-    StartDate: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format"),
-    EndDate: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format"),
-    PaxAdults: z.number().int().positive(),
-    PaxChildren: z.array(z.number().int().min(0).max(17)).default([]),
-    ReservationFirstName: z.string(),
-    ReservationLastName: z.string(),
-    City: z.string(),
-    RoomCategory: z.string(),
-    RoomBoard: z.string(),
-    ExpectedPrice: z.number().positive(),
-  }),
+    docNumber: z.string().optional(),
+    reference: z.string().optional(),
+    docYear: z.string().optional(),
+    swBySpool: z.boolean().optional(),
+  }) as z.ZodType<GetComaxOrderPDFLinkParams>,
   execute: async (args, { log }) => {
-    try {
-      const token = process.env.MEDICI_API_TOKEN;
-      if (!token) {
-        throw new Error("API token not configured");
-      }
-
-      const requestBody: CreateManualOpportunityRequest = {
-        ...args
+    if (!args.docNumber && !args.reference) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "You must provide either docNumber or reference.",
+          },
+        ],
       };
-
-      log.info("Creating manual opportunity", {
-        dates: `${args.StartDate} to ${args.EndDate}`,
-        city: args.City,
-        room: `${args.RoomCategory} with ${args.RoomBoard}`,
-        price: args.ExpectedPrice,
-        pax: `${args.PaxAdults} adults, ${args.PaxChildren.length} children`,
-        guest: `${args.ReservationFirstName} ${args.ReservationLastName}`
-      });
-
-      const response = await fetch(
-        "https://medici-backend.azurewebsites.net/api/hotels/CreateManualOpportunity",
-        {
+    }
+    const soapXml = `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n  <soap:Body>\n    <Get_CustomerOrderPDF_Link xmlns=\"http://ws.comax.co.il/Comax_WebServices/\">\n      <DocNumber>${args.docNumber ? args.docNumber : 0}</DocNumber>\n      <Reference>${args.reference ? args.reference : 0}</Reference>\n      <DocYear>${args.docYear ? args.docYear : 0}</DocYear>\n      <SwBySpool>${typeof args.swBySpool === "boolean" ? args.swBySpool : false}</SwBySpool>\n      <LoginID>${ORDER_LOGIN_ID}</LoginID>\n      <LoginPassword>${ORDER_LOGIN_PASSWORD}</LoginPassword>\n    </Get_CustomerOrderPDF_Link>\n  </soap:Body>\n</soap:Envelope>`;
+    const res = await fetch(COMAX_ORDER_ENDPOINT, {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": "application/json",
+        "Content-Type": "text/xml; charset=utf-8",
+        SOAPAction:
+          "http://ws.comax.co.il/Comax_WebServices/Get_CustomerOrderPDF_Link",
+      },
+      body: soapXml,
+    });
+    const xml = await res.text();
+    let pdfUrl: string | undefined = undefined;
+    let error: string | undefined = undefined;
+    let success = false;
+    let rawXml: string | undefined = xml;
+    try {
+      const parsed = await parseStringPromise(xml, { explicitArray: false });
+      const body = parsed["soap:Envelope"]["soap:Body"];
+      const response = body["Get_CustomerOrderPDF_LinkResponse"];
+      const result = response["Get_CustomerOrderPDF_LinkResult"];
+      if (result && typeof result === "string" && result.startsWith("http")) {
+        pdfUrl = result;
+        success = true;
+      } else {
+        error = result || "No Get_CustomerOrderPDF_LinkResult in response.";
+      }
+    } catch (e) {
+      error = `Failed to parse Comax order PDF link XML: ${e}`;
+    }
+    if (!success || !pdfUrl) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to fetch order PDF link.\n${error || "Unknown error."}\n\nRaw XML:\n${rawXml}`,
           },
-          body: JSON.stringify(requestBody),
-        }
-      );
+        ],
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Order PDF link: ${pdfUrl}`,
+        },
+      ],
+    };
+  },
+});
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API request failed: ${response.status} - ${errorText}`);
-      }
-
-      const result = (await response.json()) as CreateManualOpportunityResponse;
-
-      // Format the results for better readability
+server.addTool({
+  name: "set_comax_order_status",
+  description:
+    "Set order status by DocNumber, DocYear, Reference, Status, and StatusCode. Returns true if successful.",
+  parameters: z.object({
+    docNumber: z.string().optional(),
+    docYear: z.string().optional(),
+    reference: z.string().optional(),
+    status: z.string().optional(),
+    statusCode: z.number().optional(),
+  }) as z.ZodType<SetComaxOrderStatusParams>,
+  execute: async (args, { log }) => {
+    if (!args.docNumber && !args.reference) {
       return {
         content: [
           {
             type: "text",
-            text: `${result.success ? '✅' : '❌'} Manual Opportunity Creation ${result.success ? 'Successful' : 'Failed'}!
-
-Details:
-• Hotel ID: ${result.hotelId}
-• Room: ${result.roomName}
-• Board: ${result.board}
-• Provider: ${result.provider}
-• Booking ID: ${result.bookingSuccess}
-• Booking Status: ${result.bookingConfirmed ? 'Confirmed' : 'Pending'}
-
-Server Message: ${result.message}`
-          }
-        ]
+            text: "You must provide either docNumber or reference.",
+          },
+        ],
       };
-    } catch (error) {
-      log.error("Failed to create manual opportunity", { error: String(error) });
-      throw error;
     }
-  }
-});
-
-// Add the cancel room tool
-server.addTool({
-  name: "cancel_room",
-  description: "Cancels an existing prebooked room by its ID",
-  parameters: z.object({
-    prebookId: z.number().int().positive(),
-  }),
-  execute: async (args, { log }) => {
-    try {
-      const token = process.env.MEDICI_API_TOKEN;
-      if (!token) {
-        throw new Error("API token not configured");
-      }
-
-      log.info("Canceling room booking", {
-        prebookId: args.prebookId
-      });
-
-      const response = await fetch(
-        `https://medici-backend.azurewebsites.net/api/hotels/CancelRoomActive?prebookId=${args.prebookId}`,
-        {
-          method: "DELETE",
+    if (!args.status && !args.statusCode) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "You must provide at least one of status or statusCode.",
+          },
+        ],
+      };
+    }
+    const soapXml = `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n  <soap:Body>\n    <SetCustomerOrderStatusByParams xmlns=\"http://ws.comax.co.il/Comax_WebServices/\">\n      <DocNumber>${args.docNumber ? args.docNumber : 0}</DocNumber>\n      <DocYear>${args.docYear ? args.docYear : 0}</DocYear>\n      <Reference>${args.reference ? args.reference : 0}</Reference>\n      <Status>${args.status || ""}</Status>\n      <StatusCode>${typeof args.statusCode === "number" ? args.statusCode : 0}</StatusCode>\n      <LoginID>${ORDER_LOGIN_ID}</LoginID>\n      <LoginPassword>${ORDER_LOGIN_PASSWORD}</LoginPassword>\n    </SetCustomerOrderStatusByParams>\n  </soap:Body>\n</soap:Envelope>`;
+    const res = await fetch(COMAX_ORDER_ENDPOINT, {
+      method: "POST",
           headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": "application/json",
-          }
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API request failed: ${response.status} - ${errorText}`);
+        "Content-Type": "text/xml; charset=utf-8",
+        SOAPAction:
+          "http://ws.comax.co.il/Comax_WebServices/SetCustomerOrderStatusByParams",
+      },
+      body: soapXml,
+    });
+    const xml = await res.text();
+    let success = false;
+    let error: string | undefined = undefined;
+    try {
+      const parsed = await parseStringPromise(xml, { explicitArray: false });
+      const body = parsed["soap:Envelope"]["soap:Body"];
+      const response = body["SetCustomerOrderStatusByParamsResponse"];
+      const result = response["SetCustomerOrderStatusByParamsResult"];
+      if (result === "true" || result === true) {
+        success = true;
+      } else {
+        error = result || "Comax returned false for SetCustomerOrderStatusByParamsResult.";
       }
-
-      const operations = (await response.json()) as CancelRoomActiveResponse;
-
-      // Count successes and failures
-      const successes = operations.filter(op => op.result === "Success").length;
-      const failures = operations.length - successes;
-
-      // Format the results for better readability
+    } catch (e) {
+      error = `Failed to parse Comax set order status XML: ${e}`;
+    }
+    if (!success) {
       return {
         content: [
           {
             type: "text",
-            text: `Cancellation Process Complete (${successes} succeeded, ${failures} failed)
-
-Operation Results:
-${operations.map(op => `• ${op.name}: ${op.result === "Success" ? "✅" : "❌"} ${op.result}`).join('\n')}
-
-${failures === 0 ? "✅ All operations completed successfully!" : "⚠️ Some operations failed, please check the results above."}`
-          }
-        ]
+            text: `Failed to set order status.\n${error || "Unknown error."}`,
+          },
+        ],
       };
-    } catch (error) {
-      log.error("Failed to cancel room", { error: String(error) });
-      throw error;
     }
-  }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Order status updated successfully.`,
+        },
+      ],
+    };
+  },
 });
 
-// Add the get room archive data tool
-interface RoomArchiveDataResult {
-  startDate: string;
-  endDate: string;
-  hotelName: string;
-  city: string;
-  price: number;
-  roomBoard: string;
-  roomCategory: string;
-  priceUpdatedAt: string;
-}
-
-interface RoomArchiveDataResponse {
-  totalCount: number;
-  pages: number;
-  results: RoomArchiveDataResult[];
-}
-
 server.addTool({
-  name: "get_hotels_prices_history",
-  description: "Retrieves archived room data recorded in the system with optional filters and pagination",
+  name: "get_comax_orders_by_credit_card",
+  description:
+    "Get all orders by credit card number. Returns array of {docNumber, docYear, reference}.",
   parameters: z.object({
-    StayFrom: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format").optional(),
-    StayTo: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format").optional(),
-    HotelName: z.string().optional(),
-    MinPrice: z.number().int().positive().optional(),
-    MaxPrice: z.number().int().positive().optional(),
-    City: z.string().optional(),
-    RoomBoard: z.string().optional(),
-    RoomCategory: z.string().optional(),
-    MinUpdatedAt: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format").optional(),
-    MaxUpdatedAt: z.string().regex(dateRegex, "Date must be in YYYY-MM-DD format").optional(),
-    PageNumber: z.number().int().positive().default(1),
-    PageSize: z.number().int().positive().default(10000),
-  }),
+    creditCardNumber: z.string(),
+  }) as z.ZodType<GetComaxOrdersByCreditCardParams>,
   execute: async (args, { log }) => {
-    try {
-      const token = process.env.MEDICI_API_TOKEN;
-      if (!token) {
-        throw new Error("API token not configured");
-      }
-
-      const requestBody: RoomArchiveRequest = {
-        ...args
+    if (!args.creditCardNumber) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "You must provide creditCardNumber.",
+          },
+        ],
       };
-
-      log.info("Fetching room archive data", {
-        stay: args.StayFrom && args.StayTo ? `${args.StayFrom} to ${args.StayTo}` : "all dates",
-        priceRange: args.MinPrice && args.MaxPrice ? `${args.MinPrice} to ${args.MaxPrice}` : "any price",
-        hotel: args.HotelName || "any",
-        city: args.City || "any",
-        board: args.RoomBoard || "any",
-        category: args.RoomCategory || "any",
-        updatedAt: args.MinUpdatedAt && args.MaxUpdatedAt ? `${args.MinUpdatedAt} to ${args.MaxUpdatedAt}` : "any time",
-        page: `${args.PageNumber} (size: ${args.PageSize})`
-      });
-
-      const response = await fetch(
-        "https://medici-backend.azurewebsites.net/api/hotels/GetRoomArchiveData",
-        {
+    }
+    const soapXml = `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n  <soap:Body>\n    <GetCustomersOrdersByCreditCard xmlns=\"http://ws.comax.co.il/Comax_WebServices/\">\n      <CreditCardNumber>${args.creditCardNumber}</CreditCardNumber>\n      <LoginID>${ORDER_LOGIN_ID}</LoginID>\n      <LoginPassword>${ORDER_LOGIN_PASSWORD}</LoginPassword>\n    </GetCustomersOrdersByCreditCard>\n  </soap:Body>\n</soap:Envelope>`;
+    const res = await fetch(COMAX_ORDER_ENDPOINT, {
           method: "POST",
           headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestBody),
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API request failed: ${response.status} - ${errorText}`);
-      }
-
-      const data = (await response.json()) as RoomArchiveDataResponse;
-
-      // Format the results for better readability
-      return {
-        content: [
-          {
-            type: "text",
-            text: data.totalCount === 0 
-              ? "No archived room prices found for the specified criteria."
-              : `Found ${data.totalCount} archived room prices (${data.pages} pages):\n\n${data.results.map(room => `
-- ${room.hotelName} (${room.city})
-  • Dates: ${new Date(room.startDate).toLocaleDateString()} to ${new Date(room.endDate).toLocaleDateString()}
-  • Room: ${room.roomCategory} with ${room.roomBoard}
-  • Price: ${room.price.toFixed(2)}
-  • Last Updated: ${new Date(room.priceUpdatedAt).toLocaleString()}`).join('\n')}
-${args.PageNumber < data.pages ? `\nℹ️ There are more results available. Use PageNumber ${args.PageNumber + 1} to see the next page.` : ''}`
-          }
-        ]
-      };
-    } catch (error) {
-      log.error("Failed to fetch room archive data", { error: String(error) });
-      throw error;
-    }
-  }
-});
-
-// Add the static hotel data tool
-server.addTool({
-  name: "get_hotels_by_ids",
-  description: "Get detailed hotel information by hotel IDs",
-  parameters: z.object({
-    hotelIds: z.array(z.number()).min(1).max(500).describe("List of hotel IDs to fetch, max 500 IDs"),
-  }),
-  execute: async (args, { log }) => {
+        "Content-Type": "text/xml; charset=utf-8",
+        SOAPAction:
+          "http://ws.comax.co.il/Comax_WebServices/GetCustomersOrdersByCreditCard",
+      },
+      body: soapXml,
+    });
+    const xml = await res.text();
+    let orders: ComaxOrderByCreditCard[] = [];
+    let error: string | undefined = undefined;
+    let success = false;
     try {
-      const token = process.env.MEDICI_API_TOKEN;
-      if (!token) {
-        throw new Error("API token not configured");
+      const parsed = await parseStringPromise(xml, { explicitArray: false });
+      const body = parsed["soap:Envelope"]["soap:Body"];
+      const response = body["GetCustomersOrdersByCreditCardResponse"];
+      const result = response["GetCustomersOrdersByCreditCardResult"];
+      if (result) {
+        const arr = Array.isArray(result.ClsCustomersOrdersByCreditCard)
+          ? result.ClsCustomersOrdersByCreditCard
+          : result.ClsCustomersOrdersByCreditCard
+          ? [result.ClsCustomersOrdersByCreditCard]
+          : [];
+        orders = arr.map((o: any) => ({
+          docNumber: o.DocNumber?.toString() || "",
+          docYear: o.DocYear?.toString() || "",
+          reference: o.Reference?.toString() || "",
+        }));
+        success = true;
+      } else {
+        error = "No GetCustomersOrdersByCreditCardResult in response.";
       }
-
-      const hotelIds = args.hotelIds.join(",");
-      log.info("Fetching hotel data", { hotelIds });
-
-      const response = await fetch(
-        `https://static-data.innstant-servers.com/hotels/${hotelIds}`,
-        {
-          method: "GET",
-          headers: {
-            "aether-application-key": token,
-          },
-        }
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API request failed: ${response.status} - ${errorText}`);
-      }
-
-      const data = (await response.json()) as StaticHotelData[];
-
-      // Format the results for better readability
+    } catch (e) {
+      error = `Failed to parse Comax orders by credit card XML: ${e}`;
+    }
+    if (!success) {
       return {
         content: [
           {
             type: "text",
-            text: data.map(hotel => `
-Hotel: ${hotel.name} (${hotel.stars}★)
-ID: ${hotel.id}
-Address: ${hotel.address}, ${hotel.zip}
-Phone: ${hotel.phone}${hotel.fax ? `\nFax: ${hotel.fax}` : ''}
-Location: ${hotel.lat}, ${hotel.lon}
-Status: ${hotel.status === 1 ? 'Active' : 'Inactive'}
-
-Description:
-${hotel.description}
-
-Facilities:
-${hotel.facilities.list.join(", ")}
-
-Images: ${hotel.images.length} available
-Main Image ID: ${hotel.mainImageId}
-
-Destinations: ${hotel.destinations.map(d => `${d.type}: ${d.destinationId}`).join(", ")}
-`).join("\n\n---\n\n")
-          }
-        ]
+            text: `Failed to fetch orders by credit card.\n${error || "Unknown error."}`,
+          },
+        ],
       };
-    } catch (error) {
-      log.error("Failed to fetch hotel data", { error: String(error) });
-      throw error;
     }
-  }
+    return {
+      content: [
+        {
+          type: "text",
+          text:
+            `Found ${orders.length} orders for credit card.` +
+            (orders.length
+              ? "\n\n" +
+                orders
+                  .map(
+                    (o, i) =>
+                      `${i + 1}. DocNumber: ${o.docNumber}, DocYear: ${o.docYear}, Reference: ${o.reference}`
+                  )
+                  .join("\n")
+              : ""),
+        },
+      ],
+    };
+  },
 });
 
-// Start the server
+server.addTool({
+  name: "get_comax_orders_simple",
+  description:
+    "Get orders by date range and optional filters. Returns a result string (usually XML or CSV).",
+  parameters: z.object({
+    fromDate: z.string(),
+    toDate: z.string(),
+    storeID: z.string().optional(),
+    departmentID: z.string().optional(),
+    agentID: z.string().optional(),
+    itemID: z.string().optional(),
+    supplierID: z.string().optional(),
+    attribute1Code: z.string().optional(),
+    attribute2Code: z.string().optional(),
+    attribute3Code: z.string().optional(),
+    groupByDate: z.string().optional(),
+    groupByMonth: z.string().optional(),
+    groupBySubGroup: z.string().optional(),
+    groupByGroup: z.string().optional(),
+    groupByStore: z.string().optional(),
+    groupByPrt: z.string().optional(),
+    openOrder: z.string().optional(),
+    fromDateSupply: z.string().optional(),
+    toDateSupply: z.string().optional(),
+  }) as z.ZodType<GetComaxOrdersSimpleParams>,
+  execute: async (args, { log }) => {
+    const soapXml = `<?xml version="1.0" encoding="utf-8"?>\n<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">\n  <soap:Body>\n    <GetCustomersOrders_Simple xmlns="http://ws.comax.co.il/Comax_WebServices/">\n      <FromDate>${args.fromDate}</FromDate>\n      <ToDate>${args.toDate}</ToDate>\n      <StoreID>${args.storeID || ""}</StoreID>\n      <DepartmentID>${args.departmentID || ""}</DepartmentID>\n      <AgentID>${args.agentID || ""}</AgentID>\n      <ItemID>${args.itemID || ""}</ItemID>\n      <SupplierID>${args.supplierID || ""}</SupplierID>\n      <Attribute1Code>${args.attribute1Code || ""}</Attribute1Code>\n      <Attribute2Code>${args.attribute2Code || ""}</Attribute2Code>\n      <Attribute3Code>${args.attribute3Code || ""}</Attribute3Code>\n      <GroupByDate>${args.groupByDate || ""}</GroupByDate>\n      <GroupByMonth>${args.groupByMonth || ""}</GroupByMonth>\n      <GroupBySubGroup>${args.groupBySubGroup || ""}</GroupBySubGroup>\n      <GroupByGroup>${args.groupByGroup || ""}</GroupByGroup>\n      <GroupByStore>${args.groupByStore || ""}</GroupByStore>\n      <GroupByPrt>${args.groupByPrt || ""}</GroupByPrt>\n      <OpenOrder>${args.openOrder || ""}</OpenOrder>\n      <FromDateSupply>${args.fromDateSupply || ""}</FromDateSupply>\n      <ToDateSupply>${args.toDateSupply || ""}</ToDateSupply>\n      <LoginID>${ORDER_LOGIN_ID}</LoginID>\n      <LoginPassword>${ORDER_LOGIN_PASSWORD}</LoginPassword>\n    </GetCustomersOrders_Simple>\n  </soap:Body>\n</soap:Envelope>`;
+    const res = await fetch(COMAX_ORDER_ENDPOINT, {
+          method: "POST",
+          headers: {
+        "Content-Type": "text/xml; charset=utf-8",
+        SOAPAction:
+          "http://ws.comax.co.il/Comax_WebServices/GetCustomersOrders_Simple",
+      },
+      body: soapXml,
+    });
+    const xml = await res.text();
+    let result: string | undefined = undefined;
+    let error: string | undefined = undefined;
+    let success = false;
+    let rawXml: string | undefined = xml;
+    try {
+      const parsed = await parseStringPromise(xml, { explicitArray: false });
+      const body = parsed["soap:Envelope"]["soap:Body"];
+      const response = body["GetCustomersOrders_SimpleResponse"];
+      const resStr = response["GetCustomersOrders_SimpleResult"];
+      if (resStr) {
+        result = resStr;
+        success = true;
+      } else {
+        error = "No GetCustomersOrders_SimpleResult in response.";
+      }
+    } catch (e) {
+      error = `Failed to parse Comax orders simple XML: ${e}`;
+    }
+    if (!success) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to fetch orders simple.\n${error || "Unknown error."}\n\nRaw XML:\n${rawXml}`,
+          },
+        ],
+      };
+    }
+    // If result is a URL, fetch and parse the XML
+    if (typeof result === "string" && result.startsWith("http")) {
+      try {
+        const xmlRes = await fetch(result);
+        const xmlText = await xmlRes.text();
+        const parsed = await parseStringPromise(xmlText, { explicitArray: false });
+        const arr = parsed.ArrayOfClsGetCustomersOrdersOut?.ClsGetCustomersOrdersOut;
+        let records: Array<{ DocNumber: string; ItemName: string; Quantity: string; TotalSum: string; DateDoc: string }> = [];
+        if (Array.isArray(arr)) {
+          records = arr.slice(0, 5).map((rec) => ({
+            DocNumber: rec.DocNumber,
+            ItemName: rec.ItemName,
+            Quantity: rec.Quantity,
+            TotalSum: rec.TotalSum,
+            DateDoc: rec.DateDoc,
+          }));
+        } else if (arr) {
+          records = [{
+            DocNumber: arr.DocNumber,
+            ItemName: arr.ItemName,
+            Quantity: arr.Quantity,
+            TotalSum: arr.TotalSum,
+            DateDoc: arr.DateDoc,
+          }];
+        }
+      return {
+        content: [
+          {
+            type: "text",
+              text: `Orders XML: ${result}\n\nSample records:\n` + JSON.stringify(records, null, 2),
+            },
+          ],
+        };
+      } catch (e) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Orders XML: ${result}\n\nFailed to parse XML: ${e}`,
+            },
+          ],
+        };
+      }
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Orders result string:\n\n${result}`,
+        },
+      ],
+    };
+  },
+});
+
+server.addTool({
+  name: "chk_item_exists_in_orders",
+  description:
+    "Check if an item exists in an order by itemID and orderNumber/orderYear/reference. Returns true if exists, false otherwise.",
+  parameters: z.object({
+    itemID: z.string().optional(),
+    orderNumber: z.string().optional(),
+    orderYear: z.string().optional(),
+    reference: z.string().optional(),
+  }) as z.ZodType<ChkItemExistsInOrdersParams>,
+  execute: async (args, { log }) => {
+    if (!args.itemID) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "You must provide itemID.",
+          },
+        ],
+      };
+    }
+    if (!args.orderNumber && !args.reference) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "You must provide either orderNumber or reference.",
+          },
+        ],
+      };
+    }
+    const soapXml = `<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<soap:Envelope xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\">\n  <soap:Body>\n    <ChkItemExistsInOrders xmlns=\"http://ws.comax.co.il/Comax_WebServices/\">\n      <ItemID>${args.itemID || ""}</ItemID>\n      <OrderNumber>${args.orderNumber || ""}</OrderNumber>\n      <OrderYear>${args.orderYear || ""}</OrderYear>\n      <Reference>${args.reference || ""}</Reference>\n      <LoginID>${ORDER_LOGIN_ID}</LoginID>\n      <LoginPassword>${ORDER_LOGIN_PASSWORD}</LoginPassword>\n    </ChkItemExistsInOrders>\n  </soap:Body>\n</soap:Envelope>`;
+    const res = await fetch(COMAX_ORDER_ENDPOINT, {
+      method: "POST",
+          headers: {
+        "Content-Type": "text/xml; charset=utf-8",
+        SOAPAction:
+          "http://ws.comax.co.il/Comax_WebServices/ChkItemExistsInOrders",
+      },
+      body: soapXml,
+    });
+    const xml = await res.text();
+    let exists: boolean | undefined = undefined;
+    let error: string | undefined = undefined;
+    let success = false;
+    let rawXml: string | undefined = xml;
+    try {
+      const parsed = await parseStringPromise(xml, { explicitArray: false });
+      const body = parsed["soap:Envelope"]["soap:Body"];
+      const response = body["ChkItemExistsInOrdersResponse"];
+      const result = response["ChkItemExistsInOrdersResult"];
+      if (result === "true" || result === true) {
+        exists = true;
+        success = true;
+      } else if (result === "false" || result === false) {
+        exists = false;
+        success = true;
+      } else {
+        error = result || "Comax returned invalid result for ChkItemExistsInOrdersResult.";
+      }
+    } catch (e) {
+      error = `Failed to parse Comax ChkItemExistsInOrders XML: ${e}`;
+    }
+    if (!success) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to check item in orders.\n${error || "Unknown error."}\n\nRaw XML:\n${rawXml}`,
+          },
+        ],
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Item exists in order(s): ${exists ? "true" : "false"}`,
+        },
+      ],
+    };
+  },
+});
+
+server.addTool({
+  name: "set_comax_order_self_pickup",
+  description:
+    "Set order self-pickup by DocNumber, DocYear, or Reference. Returns true if successful.",
+  parameters: z.object({
+    docNumber: z.string().optional(),
+    docYear: z.string().optional(),
+    reference: z.string().optional(),
+  }) as z.ZodType<SetComaxOrderSelfPickupParams>,
+  execute: async (args, { log }) => {
+    if (!args.docNumber && !args.reference) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: "You must provide either docNumber or reference.",
+          },
+        ],
+      };
+    }
+    const soapXml = `<?xml version="1.0" encoding="utf-8"?>\n<soap:Envelope xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">\n  <soap:Body>\n    <SetCustomerOrderSelfPickup xmlns="http://ws.comax.co.il/Comax_WebServices/">\n      <DocNumber>${args.docNumber ? args.docNumber : 0}</DocNumber>\n      <DocYear>${args.docYear ? args.docYear : 0}</DocYear>\n      <Reference>${args.reference ? args.reference : 0}</Reference>\n      <LoginID>${ORDER_LOGIN_ID}</LoginID>\n      <LoginPassword>${ORDER_LOGIN_PASSWORD}</LoginPassword>\n    </SetCustomerOrderSelfPickup>\n  </soap:Body>\n</soap:Envelope>`;
+    const res = await fetch(COMAX_ORDER_ENDPOINT, {
+      method: "POST",
+      headers: {
+        "Content-Type": "text/xml; charset=utf-8",
+        SOAPAction:
+          "http://ws.comax.co.il/Comax_WebServices/SetCustomerOrderSelfPickup",
+      },
+      body: soapXml,
+    });
+    const xml = await res.text();
+    let success = false;
+    let error: string | undefined = undefined;
+    try {
+      const parsed = await parseStringPromise(xml, { explicitArray: false });
+      const body = parsed["soap:Envelope"]["soap:Body"];
+      const response = body["SetCustomerOrderSelfPickupResponse"];
+      const result = response["SetCustomerOrderSelfPickupResult"];
+      if (result === "true" || result === true) {
+        success = true;
+        } else {
+        error = result || "Comax returned false for SetCustomerOrderSelfPickupResult.";
+      }
+    } catch (e) {
+      error = `Failed to parse Comax set order self-pickup XML: ${e}`;
+    }
+    if (!success) {
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Failed to set order self-pickup.\n${error || "Unknown error."}`,
+          },
+        ],
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Order self-pickup updated successfully.`,
+        },
+      ],
+    };
+  },
+});
+
 server.start({
-  transportType: "stdio"
+  transportType: "stdio",
 });
 
-console.log("Medici Hotels MCP server started");
+console.log("Comax Payment Link MCP server started");
