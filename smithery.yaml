@@ -3,6 +3,13 @@ startCommand:
   type: stdio
   configSchema:
     type: object
+    required:
+      - ORDER_LOGIN_ID
+      - ORDER_LOGIN_PASSWORD
+      - TOKEN_LOGIN_NAME
+      - TOKEN_LOGIN_PASSWORD
+      - PAYMENT_LOGIN_ID
+      - PAYMENT_LOGIN_PASSWORD
     properties:
       orderNumber:
         type: string
@@ -21,12 +28,66 @@ startCommand:
         title: "Customer ID"
         description: "Comax customer ID"
         default: "22222"
+      ORDER_LOGIN_ID:
+        type: string
+        title: "Order Login ID"
+        description: "Comax order service login ID"
+      ORDER_LOGIN_PASSWORD:
+        type: string
+        title: "Order Login Password"
+        description: "Comax order service password"
+      TOKEN_LOGIN_NAME:
+        type: string
+        title: "Token Login Name"
+        description: "Comax token service login name"
+      TOKEN_LOGIN_PASSWORD:
+        type: string
+        title: "Token Login Password"
+        description: "Comax token service password"
+      PAYMENT_LOGIN_ID:
+        type: string
+        title: "Payment Login ID"
+        description: "Comax payment service login ID"
+      PAYMENT_LOGIN_PASSWORD:
+        type: string
+        title: "Payment Login Password"
+        description: "Comax payment service password"
+      BRANCH_ID:
+        type: number
+        title: "Branch ID"
+        description: "Comax branch ID"
+        default: 6
+      STORE_ID:
+        type: number
+        title: "Store ID"
+        description: "Comax store ID"
+        default: 6
+      PRICE_LIST_ID:
+        type: number
+        title: "Price List ID"
+        description: "Comax price list ID"
+        default: 1
+      RETURN_PAGE:
+        type: string
+        title: "Return Page URL"
+        description: "Return page URL after payment"
+        default: "https://www.gimo.co.il/"
   commandFunction: |-
     (config) => ({
       "command": "node",
       "args": ["dist/index.js"],
       "env": {
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "ORDER_LOGIN_ID": config.ORDER_LOGIN_ID,
+        "ORDER_LOGIN_PASSWORD": config.ORDER_LOGIN_PASSWORD,
+        "TOKEN_LOGIN_NAME": config.TOKEN_LOGIN_NAME,
+        "TOKEN_LOGIN_PASSWORD": config.TOKEN_LOGIN_PASSWORD,
+        "PAYMENT_LOGIN_ID": config.PAYMENT_LOGIN_ID,
+        "PAYMENT_LOGIN_PASSWORD": config.PAYMENT_LOGIN_PASSWORD,
+        "BRANCH_ID": config.BRANCH_ID?.toString() || "6",
+        "STORE_ID": config.STORE_ID?.toString() || "6",
+        "PRICE_LIST_ID": config.PRICE_LIST_ID?.toString() || "1",
+        "RETURN_PAGE": config.RETURN_PAGE || "https://www.gimo.co.il/"
       }
     })
 
