@@ -1,7 +1,8 @@
 version: 1
-start:
-  command: ["pnpm", "start"]
-  port: 3000
+startCommand:
+  - "pnpm"
+  - "start"
+port: 3000
 
 # Optional deployment configuration
 deploy:
